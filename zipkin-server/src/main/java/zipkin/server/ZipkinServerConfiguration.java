@@ -49,7 +49,9 @@ import zipkin.kafka.KafkaTransport;
 import zipkin.server.brave.TraceWritesSpanStore;
 
 @Configuration
-@EnableConfigurationProperties({ZipkinServerProperties.class, ZipkinCassandraProperties.class})
+@EnableConfigurationProperties({
+    ZipkinServerProperties.class,
+    ZipkinCassandraProperties.class})
 @EnableAsync(proxyTargetClass = true)
 public class ZipkinServerConfiguration {
 
@@ -69,7 +71,7 @@ public class ZipkinServerConfiguration {
   }
 
   @Bean
-  @ConditionalOnMissingBean(SpanStore.class)
+  @ConditionalOnProperty(name = "zipkin.store.type", havingValue = "mem")
   SpanStore spanStore() {
     return new InMemorySpanStore();
   }

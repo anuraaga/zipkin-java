@@ -23,6 +23,12 @@ mysql:
   db: ${MYSQL_DB:zipkin}
   max-active: ${MYSQL_MAX_CONNECTIONS:10}
   use-ssl: ${MYSQL_USE_SSL:false}
+elasticsearch:
+  cluster-name: ${ES_CLUSTER_NAME:elasticsearch}
+  hosts: ${ES_HOSTS:localhost:9300}
+  index: ${ES_INDEX:zipkin}
+  document-type: ${ES_DOCUMENT_TYPE:span}
+  daily-index-foramt: ${ES_DAILY_INDEX_FORMAT:yyyy-MM-dd}
 kafka:
   # ZooKeeper host string, comma-separated host:port value.
   zookeeper: ${KAFKA_ZOOKEEPER:}

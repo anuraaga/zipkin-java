@@ -147,6 +147,12 @@
 
       <dependency>
         <groupId>${project.groupId}</groupId>
+        <artifactId>spanstore-elasticsearch</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>${project.groupId}</groupId>
         <artifactId>transport-kafka</artifactId>
         <version>${project.version}</version>
       </dependency>

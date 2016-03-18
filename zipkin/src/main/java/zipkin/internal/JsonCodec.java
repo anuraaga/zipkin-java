@@ -502,7 +502,7 @@ public final class JsonCodec implements Codec {
     }
   }
 
-  static IllegalArgumentException exceptionReading(String type, byte[] bytes, Exception e) {
+  public static IllegalArgumentException exceptionReading(String type, byte[] bytes, Exception e) {
     String cause = e.getMessage() == null ? "Error" : e.getMessage();
     if (cause.indexOf("malformed") != -1) cause = "Malformed";
     String message = String.format("%s reading %s from json: %s", cause, type, new String(bytes, UTF_8));

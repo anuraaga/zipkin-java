@@ -30,6 +30,7 @@
     <module>zipkin-spanstores</module>
     <module>zipkin-transports</module>
     <module>zipkin-server</module>
+    <module>zipkin-armeria-server</module>
   </modules>
 
   <properties>

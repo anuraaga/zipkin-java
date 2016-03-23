@@ -1,0 +1,73 @@
+cassandra:
+  # Comma separated list of hosts / ip addresses part of Cassandra cluster.
+  contact-points: ${CASSANDRA_CONTACT_POINTS:localhost}
+  # Name of the datacenter that will be considered "local" for latency load balancing. When unset, load-balancing is round-robin.
+  local-dc: ${CASSANDRA_LOCAL_DC:}
+  # Will throw an exception on startup if authentication fails.
+  username: ${CASSANDRA_USERNAME:}
+  password: ${CASSANDRA_PASSWORD:}
+  keyspace: ${CASSANDRA_KEYSPACE:zipkin}
+  # Max pooled connections per datacenter-local host.
+  max-connections: ${CASSANDRA_MAX_CONNECTIONS:8}
+  # Ensuring that schema exists, if enabled tries to execute script /zipkin-cassandra-core/resources/cassandra-schema-cql3.txt.
+  ensure-schema: ${CASSANDRA_ENSURE_SCHEMA:true}
+  # 7 days in seconds
+  span-ttl: ${CASSANDRA_SPAN_TTL:604800}
+  # 3 days in seconds
+  index-ttl: ${CASSANDRA_INDEX_TTL:259200}
+mysql:
+  host: ${MYSQL_HOST:localhost}
+  port: ${MYSQL_TCP_PORT:3306}
+  username: ${MYSQL_USER:}
+  password: ${MYSQL_PASS:}
+  db: ${MYSQL_DB:zipkin}
+  max-active: ${MYSQL_MAX_CONNECTIONS:10}
+  use-ssl: ${MYSQL_USE_SSL:false}
+elasticsearch:
+  cluster: ${ES_CLUSTER:elasticsearch}
+  hosts: ${ES_HOSTS:localhost:9300}
+  index: ${ES_INDEX:zipkin}
+kafka:
+  # ZooKeeper host string, comma-separated host:port value.
+  zookeeper: ${KAFKA_ZOOKEEPER:}
+  # Name of topic to poll for spans
+  topic: ${KAFKA_TOPIC:zipkin}
+  # Consumer group this process is consuming on behalf of.
+  group-id: ${KAFKA_GROUP_ID:zipkin}
+  # Count of consumer threads consuming the topic
+  streams: ${KAFKA_STREAMS:1}
+zipkin:
+  collector:
+    # percentage to traces to retain
+    sample-rate: ${COLLECTOR_SAMPLE_RATE:1.0}
+  query:
+    # 7 days in millis
+    lookback: ${QUERY_LOOKBACK:86400000}
+  store:
+    type: ${STORAGE_TYPE:mem}
+  # Values here are read by Zipkin UI's javascript at /config.json
+  ui:
+    # Default limit for Find Traces
+    query-limit: 10
+    # The value here becomes a label in the top-right corner
+    environment:
+server:
+  port: ${QUERY_PORT:9411}
+  compression:
+    enabled: true
+    # compresses any response over min-response-size (default is 2KiB)
+    mime-types: application/json
+spring:
+  datasource:
+    driver-class-name: org.mariadb.jdbc.Driver
+    url: jdbc:mysql://${mysql.host}:${mysql.port}/${mysql.db}?autoReconnect=true&useSSL=${mysql.use-ssl}
+    username: ${mysql.username}
+    password: ${mysql.password}
+    max-active: ${mysql.max-active}
+    schema: classpath:/mysql.sql
+# Switch this on to create the schema on startup:
+    initialize: false
+# Example of how to log cassandra calls
+# logging:
+#     level:
+#         org.twitter.zipkin.storage.cassandra.Repository: 'DEBUG'

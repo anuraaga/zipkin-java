@@ -17,7 +17,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.net.HostAndPort;
 import com.google.common.util.concurrent.AsyncFunction;
@@ -50,8 +49,6 @@ import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.RangeQueryBuilder;
-import org.elasticsearch.script.Script;
-import org.elasticsearch.script.ScriptService.ScriptType;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.aggregations.AggregationBuilders;
 import org.elasticsearch.search.aggregations.bucket.nested.Nested;
@@ -59,7 +56,6 @@ import org.elasticsearch.search.aggregations.bucket.terms.Terms;
 import org.elasticsearch.search.aggregations.bucket.terms.Terms.Order;
 import org.elasticsearch.search.aggregations.metrics.sum.Sum;
 import org.elasticsearch.search.aggregations.metrics.tophits.TopHits;
-import org.elasticsearch.search.aggregations.pipeline.PipelineAggregatorBuilders;
 import org.elasticsearch.search.sort.SortBuilders;
 import org.elasticsearch.search.sort.SortOrder;
 import zipkin.Codec;
@@ -73,6 +69,7 @@ import zipkin.internal.Util;
 import zipkin.spanstore.guava.GuavaSpanStore;
 
 import static com.google.common.util.concurrent.Futures.immediateFuture;
+import static java.util.Collections.emptyList;
 import static org.elasticsearch.index.query.QueryBuilders.boolQuery;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
 import static org.elasticsearch.index.query.QueryBuilders.nestedQuery;
@@ -102,7 +99,7 @@ public class ElasticsearchSpanStore implements GuavaSpanStore {
     return spanConsumer.accept(spans);
   }
 
-  @Override public ListenableFuture<List<List<Span>>> getTraces(QueryRequest request) {
+  @Override public ListenableFuture<List<List<Span>>> getTraces(final QueryRequest request) {
     long endMillis = request.endTs;
     long beginMillis = endMillis - request.lookback;
 
@@ -146,29 +143,59 @@ public class ElasticsearchSpanStore implements GuavaSpanStore {
     List<String> strings = computeIndices(beginMillis, endMillis);
     final String[] indices = strings.toArray(new String[strings.size()]);
     // We need to filter to traces that contain at least one span that matches the request,
-    // but we need to order by timestamp of the first span, regardless of if it matched the
-    // filter or not. Normal queries usually will apply a filter first, meaning we wouldn't be
-    // able to "backtrack" to state with non-filtered spans to do the ordering properly, which
-    // is important to respect request.limit. Luckily, pipeline aggregations can help - we
-    // aggregate unfiltered trace ids, ordered by their min timestamp. We then apply a pipeline
-    // aggregation which applies the filter, and then removes parent buckets based on whether any
-    // documents matched the filter, effectively "backtracking".
+    // but the zipkin API is supposed to order traces by first span, regardless of if it was
+    // filtered or not. This is not possible without either multiple, heavyweight queries
+    // or complex multiple indexing, defeating much of the elegance of using elasticsearch for this.
+    // So we fudge and order on the first span among the filtered spans - in practice, there should
+    // be no significant difference in user experience since span start times are usually very
+    // close to each other in human time.
     SearchRequestBuilder elasticRequest =
         client.prepareSearch(indices)
             .setIndicesOptions(IndicesOptions.lenientExpandOpen())
             .setTypes(ElasticsearchConstants.SPAN)
-            .setQuery(matchAllQuery())
+            .setQuery(boolQuery().must(matchAllQuery()).filter(filter))
             .setSize(0)
             .addAggregation(
                 AggregationBuilders.terms("traceId_agg")
                     .field("traceId")
                     .subAggregation(AggregationBuilders.min("timestamps_agg").field("timestamp"))
-                    .subAggregation(AggregationBuilders.filter("filtered_agg").filter(filter))
-                    .subAggregation(PipelineAggregatorBuilders.having("bucket_filter")
-                        .setBucketsPathsMap(ImmutableMap.of("_count", "filtered_agg._count"))
-                        .script(new Script("_count > 0", ScriptType.INLINE, "expression", null)))
                     .order(Order.aggregation("timestamps_agg", false))
                     .size(request.limit));
+    return Futures.transformAsync(
+        ElasticListenableFuture.of(elasticRequest.execute()),
+        new AsyncFunction<SearchResponse, List<List<Span>>>() {
+          @Override public ListenableFuture<List<List<Span>>> apply(SearchResponse response)
+              throws Exception {
+            return convertTraceAggregationResponse(response, indices);
+          }
+        });
+  }
+
+  private ListenableFuture<List<List<Span>>> getByUnorderedTraceIdsWithLimit(
+      SearchResponse response, final String[] indices, int limit) {
+
+    if (response.getAggregations() == null) {
+      return immediateFuture(Collections.<List<Span>>emptyList());
+    }
+    Terms traceIdsAgg = response.getAggregations().get("traceId_agg");
+    if (traceIdsAgg == null) {
+      return immediateFuture(Collections.<List<Span>>emptyList());
+    }
+    List<String> traceIds = new ArrayList<>();
+    for (Terms.Bucket bucket : traceIdsAgg.getBuckets()) {
+      traceIds.add(bucket.getKeyAsString());
+    }
+    SearchRequestBuilder elasticRequest = client.prepareSearch(indices)
+        .setIndicesOptions(IndicesOptions.lenientExpandOpen())
+        .setTypes(ElasticsearchConstants.SPAN)
+        .setSize(0)
+        .setQuery(boolQuery().must(matchAllQuery()).filter(termsQuery("traceId", traceIds)))
+        .addAggregation(
+            AggregationBuilders.terms("traceId_agg")
+                .field("traceId")
+                .subAggregation(AggregationBuilders.min("timestamps_agg").field("timestamp"))
+                .order(Order.aggregation("timestamps_agg", false))
+                .size(limit));
     return Futures.transformAsync(
         ElasticListenableFuture.of(elasticRequest.execute()),
         new AsyncFunction<SearchResponse, List<List<Span>>>() {
@@ -278,11 +305,13 @@ public class ElasticsearchSpanStore implements GuavaSpanStore {
             .setQuery(matchAllQuery())
             .setSize(0)
             .addAggregation(AggregationBuilders.terms("annotationServiceName_agg")
-                .field("annotations.endpoint.serviceName"))
+                .field("annotations.endpoint.serviceName")
+                .size(0))
             .addAggregation(AggregationBuilders.nested("binaryAnnotations_agg")
                 .path("binaryAnnotations")
                 .subAggregation(AggregationBuilders.terms("binaryAnnotationsServiceName_agg")
-                    .field("binaryAnnotations.endpoint.serviceName")));
+                    .field("binaryAnnotations.endpoint.serviceName")
+                    .size(0)));
     return Futures.transform(
         ElasticListenableFuture.of(elasticRequest.execute()),
         new Function<SearchResponse, List<String>>() {
@@ -294,7 +323,7 @@ public class ElasticsearchSpanStore implements GuavaSpanStore {
 
   private List<String> convertServiceNamesResponse(SearchResponse response) {
     if (response.getAggregations() == null) {
-      return Collections.emptyList();
+      return emptyList();
     }
     SortedSet<String> serviceNames = new TreeSet<>();
     Terms annotationServiceNamesAgg = response.getAggregations().get("annotationServiceName_agg");
@@ -335,7 +364,8 @@ public class ElasticsearchSpanStore implements GuavaSpanStore {
         .setSize(0)
         .addAggregation(AggregationBuilders.terms("name_agg")
             .order(Order.term(true))
-            .field("name"));
+            .field("name")
+            .size(0));
     return Futures.transform(
         ElasticListenableFuture.of(elasticRequest.execute()),
         new Function<SearchResponse, List<String>>() {
@@ -348,7 +378,7 @@ public class ElasticsearchSpanStore implements GuavaSpanStore {
   private List<String> convertSpanNameResponse(SearchResponse response) {
     Terms namesAgg = response.getAggregations().get("name_agg");
     if (namesAgg == null) {
-      return Collections.emptyList();
+      return emptyList();
     }
     ImmutableList.Builder<String> spanNames = ImmutableList.builder();
     for (Terms.Bucket bucket : namesAgg.getBuckets()) {
@@ -386,11 +416,11 @@ public class ElasticsearchSpanStore implements GuavaSpanStore {
 
   private List<DependencyLink> convertDependenciesResponse(SearchResponse response) {
     if (response.getAggregations() == null) {
-      return Collections.emptyList();
+      return emptyList();
     }
     Terms parentChildAgg = response.getAggregations().get("parent_child_agg");
     if (parentChildAgg == null) {
-      return Collections.emptyList();
+      return emptyList();
     }
     ImmutableList.Builder<DependencyLink> links = ImmutableList.builder();
     for (Terms.Bucket bucket : parentChildAgg.getBuckets()) {
